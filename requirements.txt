@@ -1,0 +1,24 @@
+# Agno framework
+agno>=0.1.0
+
+# Neo4j and graph database
+neo4j==5.15.0
+
+# OpenAI for embeddings and LLM
+openai>=1.6.1,<2.0.0
+
+# Environment and configuration
+python-dotenv==1.0.0
+
+# Data validation
+pydantic>=2.5.0,<2.10.0
+
+# Scientific computing
+numpy>=1.21.0
+
+# Deep learning
+torch>=2.0.0
+
+# 3D mesh processing
+trimesh>=3.20.0
+
