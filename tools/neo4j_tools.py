@@ -925,6 +925,42 @@ def check_recent_updates(minutes: int = 5, voxel_ids: Optional[List[int]] = None
                 recently_updated = _execute_query(query, {"cutoff": cutoff})
         except Exception:
             pass  # last_updated may not exist on voxels
+
+        # Check for proactive structural alerts
+        structural_alerts = []
+        try:
+            if voxel_ids:
+                alert_query = """
+                    MATCH (a:StructuralAlert)
+                    WHERE a.timestamp > $cutoff AND a.voxel_id IN $voxel_ids
+                    RETURN a.alert_id as alert_id,
+                           a.alert_type as alert_type,
+                           a.severity as severity,
+                           a.timestamp as timestamp,
+                           a.voxel_id as voxel_id,
+                           a.message as message,
+                           a.value as value
+                    ORDER BY a.timestamp DESC
+                    LIMIT 20
+                """
+                structural_alerts = _execute_query(alert_query, {"cutoff": cutoff, "voxel_ids": voxel_ids})
+            else:
+                alert_query = """
+                    MATCH (a:StructuralAlert)
+                    WHERE a.timestamp > $cutoff
+                    RETURN a.alert_id as alert_id,
+                           a.alert_type as alert_type,
+                           a.severity as severity,
+                           a.timestamp as timestamp,
+                           a.voxel_id as voxel_id,
+                           a.message as message,
+                           a.value as value
+                    ORDER BY a.timestamp DESC
+                    LIMIT 20
+                """
+                structural_alerts = _execute_query(alert_query, {"cutoff": cutoff})
+        except Exception:
+            pass
         
         # Build detailed summary for agent to analyze
         change_summary = []
@@ -1001,17 +1037,31 @@ def check_recent_updates(minutes: int = 5, voxel_ids: Optional[List[int]] = None
                 "description": f"Voxel {voxel_id} was updated - position=({x:.2f}, {y:.2f}, {z:.2f}), {sensor_text}"
             }
             change_summary.append(detail)
+
+        # Include proactive monitoring alerts in response context
+        for alert in structural_alerts:
+            detail = {
+                "alert_id": alert.get("alert_id"),
+                "alert_type": alert.get("alert_type"),
+                "severity": alert.get("severity"),
+                "timestamp": alert.get("timestamp"),
+                "voxel_id": alert.get("voxel_id"),
+                "value": alert.get("value"),
+                "description": alert.get("message", "Structural alert raised")
+            }
+            change_summary.append(detail)
         
         result = {
             "status": "checked",
             "cutoff_time": cutoff,
             "minutes_checked": minutes,
             "checked_voxels": voxel_ids if voxel_ids else "all",
-            "has_changes": len(change_notifications) > 0 or len(recently_updated) > 0,
-            "total_changes": len(change_notifications) + len(recently_updated),
+            "has_changes": len(change_notifications) > 0 or len(recently_updated) > 0 or len(structural_alerts) > 0,
+            "total_changes": len(change_notifications) + len(recently_updated) + len(structural_alerts),
             "change_details": change_summary,
             "raw_change_notifications": change_notifications,
-            "raw_recently_updated_voxels": recently_updated
+            "raw_recently_updated_voxels": recently_updated,
+            "raw_structural_alerts": structural_alerts
         }
         
         if result["has_changes"]:

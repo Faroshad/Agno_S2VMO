@@ -15,6 +15,7 @@ import sys
 import os
 import time
 import argparse
+from collections import deque
 from pathlib import Path
 from datetime import datetime
 import json
@@ -24,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 from initialize_neo4j import reset_neo4j_to_initial_state
+from agents.monitoring_agent import MonitoringAgent
+from config.settings import Settings
+from core.event_bus import event_bus, SimulationCycleEvent
 from sensors.realistic_sensor_generator import RealisticSensorGenerator
 from tools.sensor_update import update_sensor_readings, reset_sensor_stream
 from tools.fem_tool import run_pipeline, update_neo4j_with_fem_results
@@ -50,6 +54,33 @@ class SimulationCoordinator:
         self.sensor_gen = RealisticSensorGenerator(seed=seed, time_scale=time_scale)
         self.cycle_count = 0
         self.start_time = None
+        self.fem_skips = 0
+        self.skip_next_fem = False
+        self.cycle_durations = deque(maxlen=100)
+        self.last_monitoring_summary = None
+
+        try:
+            self.monitoring_agent = MonitoringAgent()
+        except Exception as exc:
+            self.monitoring_agent = None
+            print(f"⚠️  Monitoring agent disabled due to initialization error: {exc}")
+
+    def _avg_cycle_duration(self) -> float:
+        if not self.cycle_durations:
+            return 0.0
+        return float(sum(self.cycle_durations) / len(self.cycle_durations))
+
+    def _print_runtime_status(self):
+        print("\n📈 Runtime status")
+        print(f"   cycles_completed: {self.cycle_count}")
+        print(f"   fem_skips: {self.fem_skips}")
+        print(f"   avg_cycle_time_s: {self._avg_cycle_duration():.2f}")
+        if self.last_monitoring_summary:
+            print(
+                "   last_alerts: "
+                f"stress_breaches={self.last_monitoring_summary.get('stress_breaches', 0)}, "
+                f"quality_issues={self.last_monitoring_summary.get('quality_issues', 0)}"
+            )
         
     def initialize_system(self):
         """Initialize/reset the system to initial state"""
@@ -75,7 +106,7 @@ class SimulationCoordinator:
         except Exception as e:
             print(f"⚠️  Warning: could not reset SensorStream: {e}")
     
-    def run_cycle(self) -> dict:
+    def run_cycle(self, run_fem: bool = True) -> dict:
         """
         Run one complete simulation cycle:
         1. Generate sensor readings
@@ -112,42 +143,67 @@ class SimulationCoordinator:
             print(f"❌ Error updating sensors in Neo4j: {e}")
             return {"success": False, "error": str(e)}
         
+        fem_results = None
+        timestamp = cycle_timestamp
+
         # Step 3: Run FEM simulation
-        print(f"\n🔬 Running FEM simulation...")
-        try:
-            # Convert to numpy array for FEM pipeline
-            sensor_array = np.array(sensor_values).reshape(1, -1)
-            
-            # Run FEM pipeline
-            fem_results = run_pipeline(sensor_reading=sensor_array, output_dir="out")
-            
-            print(f"✅ FEM simulation complete")
-            print(f"   Avg stress: {fem_results['stress_magnitude'].mean():.2e} Pa")
-            print(f"   Max stress: {fem_results['stress_magnitude'].max():.2e} Pa")
-            
-        except Exception as e:
-            print(f"❌ Error running FEM simulation: {e}")
-            return {"success": False, "error": str(e)}
-        
-        # Step 4: Update Neo4j with FEM results
-        print(f"\n📊 Updating Neo4j with FEM results...")
-        try:
-            # Reuse the same cycle timestamp to keep sensor/FEM writes in sync
-            timestamp = cycle_timestamp
-            neo4j_result = update_neo4j_with_fem_results(
-                strain_voxel=fem_results['strain_voxel'],
-                stress_voxel=fem_results['stress_voxel'],
-                voxel_mask=fem_results['voxel_mask'],
-                solid_coords=fem_results['solid_coords'],
-                sensor_reading=np.array(sensor_values),
-                timestamp=timestamp
-            )
-            
-            print(f"✅ Updated {neo4j_result['voxels_updated']} voxels with FEM results")
-            
-        except Exception as e:
-            print(f"❌ Error updating Neo4j with FEM results: {e}")
-            return {"success": False, "error": str(e)}
+        if run_fem:
+            print(f"\n🔬 Running FEM simulation...")
+            try:
+                # Convert to numpy array for FEM pipeline
+                sensor_array = np.array(sensor_values).reshape(1, -1)
+
+                # Run FEM pipeline
+                fem_results = run_pipeline(sensor_reading=sensor_array, output_dir="out")
+
+                print(f"✅ FEM simulation complete")
+                print(f"   Avg stress: {fem_results['stress_magnitude'].mean():.2e} Pa")
+                print(f"   Max stress: {fem_results['stress_magnitude'].max():.2e} Pa")
+
+            except Exception as e:
+                print(f"❌ Error running FEM simulation: {e}")
+                return {"success": False, "error": str(e)}
+
+            # Step 4: Update Neo4j with FEM results
+            print(f"\n📊 Updating Neo4j with FEM results...")
+            try:
+                # Reuse the same cycle timestamp to keep sensor/FEM writes in sync
+                neo4j_result = update_neo4j_with_fem_results(
+                    strain_voxel=fem_results['strain_voxel'],
+                    stress_voxel=fem_results['stress_voxel'],
+                    voxel_mask=fem_results['voxel_mask'],
+                    solid_coords=fem_results['solid_coords'],
+                    sensor_reading=np.array(sensor_values),
+                    timestamp=timestamp
+                )
+
+                print(f"✅ Updated {neo4j_result['voxels_updated']} voxels with FEM results")
+
+            except Exception as e:
+                print(f"❌ Error updating Neo4j with FEM results: {e}")
+                return {"success": False, "error": str(e)}
+        else:
+            print("\n⏭️  Skipping FEM for this cycle to recover from prior overrun")
+            neo4j_result = {"voxels_updated": 0}
+
+        # Step 5: Proactive monitoring alerts
+        if self.monitoring_agent is not None:
+            try:
+                monitoring_summary = self.monitoring_agent.assess_cycle(
+                    cycle=self.cycle_count,
+                    timestamp=timestamp,
+                )
+                self.last_monitoring_summary = monitoring_summary
+                print(
+                    "✅ Monitoring alerts processed: "
+                    f"stress_breaches={monitoring_summary['stress_breaches']}, "
+                    f"quality_issues={monitoring_summary['quality_issues']}"
+                )
+            except Exception as e:
+                monitoring_summary = {"error": str(e)}
+                print(f"⚠️  Monitoring agent failed for cycle {self.cycle_count}: {e}")
+        else:
+            monitoring_summary = {"status": "disabled"}
         
         # Calculate cycle statistics
         cycle_duration = time.time() - cycle_start
@@ -158,12 +214,25 @@ class SimulationCoordinator:
             "scenario_time_s": t_scenario,
             "status": status,
             "sensor_readings": sensor_values,
-            "avg_stress": float(fem_results['stress_magnitude'].mean()),
-            "max_stress": float(fem_results['stress_magnitude'].max()),
+            "avg_stress": float(fem_results['stress_magnitude'].mean()) if fem_results is not None else 0.0,
+            "max_stress": float(fem_results['stress_magnitude'].max()) if fem_results is not None else 0.0,
             "voxels_updated": neo4j_result['voxels_updated'],
             "cycle_duration_s": cycle_duration,
-            "timestamp": timestamp
+            "timestamp": timestamp,
+            "fem_skipped": not run_fem,
+            "monitoring": monitoring_summary,
         }
+
+        event_bus.publish_cycle_complete(
+            SimulationCycleEvent(
+                cycle=self.cycle_count,
+                timestamp=timestamp,
+                voxels_updated=neo4j_result["voxels_updated"],
+                max_stress=stats["max_stress"],
+                avg_stress=stats["avg_stress"],
+                fem_skipped=not run_fem,
+            )
+        )
         
         print(f"\n✅ Cycle {self.cycle_count} complete in {cycle_duration:.1f}s")
         print(f"{'─'*80}")
@@ -209,10 +278,28 @@ class SimulationCoordinator:
                 
                 # Run cycle
                 try:
-                    stats = self.run_cycle()
+                    run_fem_this_cycle = not self.skip_next_fem
+                    stats = self.run_cycle(run_fem=run_fem_this_cycle)
                     
                     if not stats.get("success", False):
                         print(f"❌ Cycle {self.cycle_count} failed: {stats.get('error')}")
+                    else:
+                        self.cycle_durations.append(stats["cycle_duration_s"])
+
+                        if not run_fem_this_cycle:
+                            self.fem_skips += 1
+                            self.skip_next_fem = False
+                        else:
+                            overrun_limit = self.update_period * Settings.MAX_CYCLE_OVERRUN_FACTOR
+                            if stats["cycle_duration_s"] > overrun_limit:
+                                print(
+                                    "⚠️  Cycle duration exceeded supervision threshold; "
+                                    "next cycle will skip FEM for recovery"
+                                )
+                                self.skip_next_fem = True
+
+                        if self.cycle_count > 0 and self.cycle_count % 5 == 0:
+                            self._print_runtime_status()
                     
                 except Exception as e:
                     print(f"❌ Unexpected error in cycle {self.cycle_count}: {e}")
@@ -242,7 +329,13 @@ class SimulationCoordinator:
             print(f"Total cycles: {self.cycle_count}")
             print(f"Total time: {total_time:.1f}s ({total_time/60:.1f}m)")
             print(f"Average cycle time: {total_time/max(self.cycle_count, 1):.1f}s")
+            print(f"FEM skips: {self.fem_skips}")
             print("="*80)
+
+            try:
+                self.monitoring_agent.close()
+            except Exception:
+                pass
 
 
 def main():
