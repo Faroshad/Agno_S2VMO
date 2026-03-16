@@ -20,11 +20,13 @@ try:
     from ..tools.neo4j_tools import neo4j_toolkit
     from ..tools.memory_tools import MemoryRetrievalTool
     from ..tools.fem_tool import fem_toolkit
+    from ..core.event_bus import event_bus
     from ..config.settings import Settings
 except ImportError:
     from tools.neo4j_tools import neo4j_toolkit
     from tools.memory_tools import MemoryRetrievalTool
     from tools.fem_tool import fem_toolkit
+    from core.event_bus import event_bus
     from config.settings import Settings
 
 
@@ -640,7 +642,75 @@ class GraphRAGAgent:
         """Initialize Agno-based agent with intelligent query generation, memory, and FEM analysis"""
         self.agent = create_graph_rag_agent()
         self.memory = MemoryRetrievalTool()
+        self.last_seen_cycle = -1
         print("✅ Agno GraphRAG Agent initialized (intelligent query generation + memory + FEM analysis)")
+
+    def _drain_cycle_events(self):
+        """Fetch pending simulation events so responses can reflect fresh data state."""
+        events = event_bus.drain_cycle_events()
+        if not events:
+            return None
+
+        latest = events[-1]
+        self.last_seen_cycle = max(self.last_seen_cycle, latest.cycle)
+        return latest
+
+    def _build_context_prompt(self, question: str) -> str:
+        """Build memory-aware prompt context with bounded history and semantic recall."""
+        context_parts = []
+
+        try:
+            context = self.memory.get_context_for_query(
+                question,
+                include_semantic=True,
+                include_conversation=True,
+            )
+
+            history = context.get("conversation_history", [])
+            if history:
+                limited_history = history[-Settings.CONVERSATION_CONTEXT_MESSAGES:]
+                context_parts.append("Recent conversation:")
+                for msg in limited_history:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if role == "human":
+                        context_parts.append(f"Q: {content}")
+                    elif role in ["ai", "assistant"]:
+                        context_parts.append(f"A: {content}")
+
+            semantic_memories = context.get("semantic_memories", [])
+            if semantic_memories:
+                context_parts.append("")
+                context_parts.append("Relevant past knowledge:")
+                for memory in semantic_memories[:Settings.SEMANTIC_MEMORY_TOP_K]:
+                    content = memory.get("content", "")
+                    score = memory.get("similarity_score", 0.0)
+                    context_parts.append(f"- {content} (similarity={score:.2f})")
+
+        except Exception:
+            # Memory retrieval is optional. Continue with direct question if unavailable.
+            pass
+
+        event = self._drain_cycle_events()
+        if event is not None:
+            context_parts.append("")
+            context_parts.append(
+                "Runtime update: "
+                f"Simulation cycle {event.cycle} completed at {event.timestamp}; "
+                f"voxels_updated={event.voxels_updated}, "
+                f"max_stress={event.max_stress:.3e} Pa, "
+                f"avg_stress={event.avg_stress:.3e} Pa, "
+                f"fem_skipped={event.fem_skipped}."
+            )
+
+        context_parts.append("")
+        context_parts.append(f"Now answer this question: {question}")
+        context_parts.append(
+            "CRITICAL: Check history first; resolve pronouns from most recent entities; "
+            "answer only what was asked; count unique IDs."
+        )
+
+        return "\n".join(context_parts)
     
     def ask(self, question: str, save_to_memory: bool = True) -> str:
         """
@@ -655,32 +725,7 @@ class GraphRAGAgent:
         """
         print(f"\n🤔 Question: {question}")
         
-        # Build context from FULL conversation history (no limit!)
-        context_prompt = question
-        try:
-            # Load ALL conversation history - no limit for complete context
-            history = self.memory.get_conversation_history(limit=None)
-            if history:
-                print(f"🧠 Loading conversation context ({len(history)} previous messages)...")
-                # Format conversation history for context
-                context_parts = ["Previous conversation:"]
-                
-                for msg in history:
-                    role = msg.get('role', 'unknown')
-                    content = msg.get('content', '')
-                    if role == 'human':
-                        context_parts.append(f"Q: {content}")
-                    elif role == 'assistant':
-                        context_parts.append(f"A: {content}")
-                
-            context_parts.append("")
-            context_parts.append(f"Now answer this: {question}")
-            context_parts.append("")
-            context_parts.append("CRITICAL: Check history FIRST! If answer exists, reuse naturally. 'them/these/those' = MOST RECENT list from MY last answer. If filtering/extracting THOSE voxels, use WHERE id IN [tracked_ids] AND condition! Be conversational. Answer ONLY what's asked. Count UNIQUE IDs.")
-            context_prompt = "\n".join(context_parts)
-        except Exception as e:
-            # Memory retrieval is optional - continue without it
-            pass
+        context_prompt = self._build_context_prompt(question)
         
         print("🔮 Agno Agent processing...")
         
@@ -695,7 +740,7 @@ class GraphRAGAgent:
                 self.memory.add_conversation_turn(
                     human_message=question,
                     ai_message=answer,
-                    metadata={"timestamp": "now"}
+                    metadata={"timestamp": "now", "last_seen_cycle": self.last_seen_cycle}
                 )
                 print("💾 Conversation saved to memory")
             except Exception as e:

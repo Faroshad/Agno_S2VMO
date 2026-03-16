@@ -42,6 +42,7 @@ class Settings:
     
     # Memory Configuration
     MEMORY_BUFFER_SIZE: int = 10  # Number of recent messages to keep in buffer
+    CONVERSATION_CONTEXT_MESSAGES: int = 20  # Max recent messages injected into prompt context
     SEMANTIC_MEMORY_TOP_K: int = 5  # Number of semantic memories to retrieve
     MEMORY_RELEVANCE_THRESHOLD: float = 0.7  # Minimum similarity score
     
@@ -56,9 +57,16 @@ class Settings:
     
     # File Monitoring Configuration
     UPDATE_CHECK_INTERVAL: int = 5  # Seconds between file change checks
+
+    # Runtime supervision thresholds
+    MAX_CYCLE_OVERRUN_FACTOR: float = 1.2  # Cycle considered overloaded if duration > period * factor
+
+    # Structural alert thresholds (Pascals)
+    STRESS_WARNING_THRESHOLD_PA: float = float(os.getenv("STRESS_WARNING_THRESHOLD_PA", "2000"))
+    STRESS_CRITICAL_THRESHOLD_PA: float = float(os.getenv("STRESS_CRITICAL_THRESHOLD_PA", "3000"))
     
     # Paths
-    PROJECT_ROOT: Path = Path(__file__).parent.parent.parent
+    PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
     DATA_DIR: Path = PROJECT_ROOT / "data"
     
     # Voxel Type Definitions (for documentation and prompts)
@@ -111,6 +119,14 @@ class Settings:
             "model": cls.OPENAI_MODEL,
             "embedding_model": cls.OPENAI_EMBEDDING_MODEL,
             "temperature": cls.OPENAI_TEMPERATURE
+        }
+
+    @classmethod
+    def get_alert_thresholds(cls) -> dict:
+        """Get structural alert threshold configuration."""
+        return {
+            "stress_warning_pa": cls.STRESS_WARNING_THRESHOLD_PA,
+            "stress_critical_pa": cls.STRESS_CRITICAL_THRESHOLD_PA,
         }
 
 

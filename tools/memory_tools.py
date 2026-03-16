@@ -41,7 +41,8 @@ class MemoryRetrievalTool:
             uri=uri or conn_info["uri"],
             user=user or conn_info["user"],
             password=password or conn_info["password"],
-            database=database or conn_info["database"]
+            database=database or conn_info["database"],
+            max_buffer_messages=max(200, Settings.CONVERSATION_CONTEXT_MESSAGES * 2)
         )
     
     def get_conversation_history(self, limit: Optional[int] = None) -> List[Dict[str, str]]:

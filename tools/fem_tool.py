@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import os
 import json
+from pathlib import Path
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 from neo4j import GraphDatabase
@@ -21,11 +22,26 @@ try:
 except ImportError:
     from config.settings import Settings
 
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MODELS_DIR = PROJECT_ROOT / "models"
+DEFAULT_VOXEL_GRID_PATH = PROJECT_ROOT / "out" / "voxel_grid.npz"
+
+
+def _require_file(file_path: Path, description: str) -> Path:
+    """Fail fast with a clear message when required runtime assets are missing."""
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"Missing {description}: {file_path}. "
+            f"Ensure required assets are present before running FEM analysis."
+        )
+    return file_path
+
 # ============================================================
 # BOOLEAN MASK CREATION
 # ============================================================
 
-def create_voxel_mask(voxel_grid_path="out/voxel_grid.npz"):
+def create_voxel_mask(voxel_grid_path: Optional[str] = None):
     """
     Create boolean mask M from the voxelized mesh data.
     Uses the same voxelization as the neural network pipeline (0.1m voxels).
@@ -33,7 +49,12 @@ def create_voxel_mask(voxel_grid_path="out/voxel_grid.npz"):
     print("Loading voxel grid from voxelized mesh...")
     
     # Load the voxel grid created by voxelizer.py
-    vg = np.load(voxel_grid_path, allow_pickle=True)
+    if voxel_grid_path is None:
+        resolved_voxel_grid_path = _require_file(DEFAULT_VOXEL_GRID_PATH, "voxel grid")
+    else:
+        resolved_voxel_grid_path = _require_file(Path(voxel_grid_path), "voxel grid")
+
+    vg = np.load(resolved_voxel_grid_path, allow_pickle=True)
     M = vg["matrix"].astype(bool)
     origin = vg["origin"].astype(float).reshape(3,)
     pitch = float(np.atleast_1d(vg["pitch"])[0])
@@ -121,7 +142,7 @@ def run_pipeline(sensor_reading=None, output_dir="out"):
     print(f"Number of solid voxels: {len(coords)}")
     
     # Load origin and pitch from the voxel grid
-    vg = np.load("out/voxel_grid.npz", allow_pickle=True)
+    vg = np.load(_require_file(DEFAULT_VOXEL_GRID_PATH, "voxel grid"), allow_pickle=True)
     origin = vg["origin"].astype(float).reshape(3,)
     pitch = float(np.atleast_1d(vg["pitch"])[0])
     
@@ -149,8 +170,11 @@ def run_pipeline(sensor_reading=None, output_dir="out"):
     # Load models with strict=False to handle architecture mismatches
     # This allows the models to load even if some layer names don't match exactly
     try:
-        s2v.load_state_dict(torch.load("data/models/s2v_model_final.pth", map_location=device), strict=False)
-        v2s.load_state_dict(torch.load("data/models/unet_model_final.pth", map_location=device), strict=False)
+        s2v_model_path = _require_file(MODELS_DIR / "s2v_model_final.pth", "S2V model weights")
+        unet_model_path = _require_file(MODELS_DIR / "unet_model_final.pth", "UNet model weights")
+
+        s2v.load_state_dict(torch.load(s2v_model_path, map_location=device), strict=False)
+        v2s.load_state_dict(torch.load(unet_model_path, map_location=device), strict=False)
         print("Models loaded successfully!")
     except Exception as e:
         print(f"Error loading models: {e}")
@@ -199,8 +223,8 @@ def run_pipeline(sensor_reading=None, output_dir="out"):
     # LOAD NORMALIZATION DATA
     # ============================================================
     print("\nLoading normalization parameters...")
-    strain_mean = np.load("data/models/strain_mean.npy")
-    strain_std = np.load("data/models/strain_std.npy")
+    strain_mean = np.load(_require_file(MODELS_DIR / "strain_mean.npy", "strain mean normalization"))
+    strain_std = np.load(_require_file(MODELS_DIR / "strain_std.npy", "strain std normalization"))
     
     # Normalize strain data
     eps_norm = (eps_voxel - strain_mean) / (strain_std + 1e-8)
