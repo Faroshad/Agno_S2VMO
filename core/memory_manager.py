@@ -36,7 +36,8 @@ class MemoryManager:
     """
     
     def __init__(self, uri: str = "bolt://localhost:7687", user: str = "neo4j", 
-                 password: str = "test1234", database: Optional[str] = None):
+                 password: str = "test1234", database: Optional[str] = None,
+                 max_buffer_messages: int = 200):
         """
         Initialize memory manager with Neo4j connection
         
@@ -45,9 +46,11 @@ class MemoryManager:
             user: Neo4j username
             password: Neo4j password
             database: Neo4j database name
+            max_buffer_messages: Max in-memory messages to retain for prompt context
         """
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.database = database
+        self.max_buffer_messages = max(2, int(max_buffer_messages))
         
         # Initialize OpenAI for embeddings
         api_key = os.getenv("OPENAI_API_KEY")
@@ -119,9 +122,15 @@ class MemoryManager:
         # Add to in-memory buffer
         self.conversation_buffer.append({"role": "human", "content": human_message})
         self.conversation_buffer.append({"role": "ai", "content": ai_message})
+        self._trim_conversation_buffer()
         
         # Persist to Neo4j
         self._persist_conversation_turn(human_message, ai_message, metadata)
+
+    def _trim_conversation_buffer(self):
+        """Keep only the most recent messages to bound memory usage."""
+        if len(self.conversation_buffer) > self.max_buffer_messages:
+            self.conversation_buffer = self.conversation_buffer[-self.max_buffer_messages:]
     
     def _persist_conversation_turn(self, human_message: str, ai_message: str, 
                                    metadata: Optional[Dict] = None):

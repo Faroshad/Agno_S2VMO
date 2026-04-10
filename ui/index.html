@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>S2VMO · Digital Twin</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+
+<!-- Application styles -->
+<link rel="stylesheet" href="/static/css/styles.css?v=20260409b"/>
+
+<!-- Third-party libraries (loaded synchronously so JS files can reference globals) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lucide@0.400.0/dist/umd/lucide.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+
+<!-- Application modules (defer = execute in order after DOM is parsed) -->
+<script defer src="/static/js/utils.js?v=20260412g"></script>
+<script defer src="/static/js/nodeflow.js?v=20260412e"></script>
+<script defer src="/static/js/chart-view.js?v=20260412e"></script>
+<script defer src="/static/js/viewer.js?v=20260410b"></script>
+<script defer src="/static/js/app.js?v=20260409b"></script>
+</head>
+
+<body>
+
+<!-- ════════ TOP BAR ════════════════════════════════════════════════════════ -->
+<div id="topbar">
+  <div class="logo">S2VMO <span>· Digital Twin</span></div>
+  <div class="top-sep"></div>
+
+  <div class="status-pill">
+    <div class="dot" id="dot-mqtt"></div>
+    <span class="ico ico-14" id="ico-mqtt"></span> MQTT
+    <span id="mqtt-live-badge">LIVE</span>
+  </div>
+  <div class="status-pill">
+    <div class="dot" id="dot-neo4j"></div>
+    <span class="ico ico-14" id="ico-neo4j"></span> Neo4j
+  </div>
+  <div class="status-pill">
+    <div class="dot" id="dot-sim"></div>
+    <span class="ico ico-14" id="ico-sim"></span> Simulation
+  </div>
+  <div class="status-pill">
+    <div class="dot" id="dot-fem"></div>
+    <span class="ico ico-14" id="ico-fem"></span> FEM Model
+  </div>
+
+  <div class="top-spacer"></div>
+  <span id="msgs-badge">0 alerts</span>
+  <button class="topbar-btn" onclick="initNeo4j()">Init DB</button>
+  <button class="topbar-btn primary" id="btn-run-sim" onclick="toggleSim()">Run Simulation</button>
+  <button class="topbar-btn" onclick="singleStep()">Step</button>
+</div>
+
+<!-- ════════ WORKSPACE ══════════════════════════════════════════════════════ -->
+<div id="workspace">
+  <div id="left">
+
+    <!-- ── TOP ROW: Zoomable Node Flow Canvas ── -->
+    <div id="nodeflow">
+
+      <!-- Zoom controls -->
+      <div id="nf-zoom-bar">
+        <button class="nf-zoom-btn" onclick="nfZoomStep(1.25)" title="Zoom In">+</button>
+        <button class="nf-zoom-btn" onclick="nfZoomFit()" title="Fit All" style="font-size:10px;width:36px;">Fit</button>
+        <button class="nf-zoom-btn" onclick="nfZoomStep(0.8)" title="Zoom Out">−</button>
+        <span id="nf-zoom-label">100%</span>
+      </div>
+
+      <!-- Transform canvas: all nodes + wire SVG live here -->
+      <div id="nf-canvas">
+        <svg id="wire-svg"></svg>
+        <div id="nodes">
+
+          <!-- MQTT Broker -->
+          <div class="node" id="n-mqtt" style="left:20px;top:20px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-mqtt"></span>
+              <span class="node-title">MQTT Broker</span>
+              <div class="node-status dot" id="nd-mqtt"></div>
+            </div>
+            <div class="node-body">
+              <div class="node-field">
+                <div class="node-label">Broker</div>
+                <input class="node-input" id="mqtt-broker" value="broker.hivemq.com"/>
+              </div>
+              <div class="node-field">
+                <div class="node-label">Topic</div>
+                <input class="node-input" id="mqtt-topic" value="farshad/s2vmo/dome/stream"/>
+              </div>
+              <button class="node-btn" id="mqtt-toggle-btn" onclick="toggleMQTT()" disabled>Connect</button>
+              <div class="node-val" id="mqtt-count">0 messages</div>
+              <div class="node-val" id="mqtt-sensor-val" style="font-size:9px;color:var(--txt2);">Awaiting sensor data…</div>
+            </div>
+            <div class="port port-out" id="p-mqtt-out"></div>
+          </div>
+
+          <!-- Sensor Config -->
+          <div class="node" id="n-sens" style="left:280px;top:70px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-sens"></span>
+              <span class="node-title">Sensor Config</span>
+              <div class="node-status dot warn" id="nd-sens"></div>
+            </div>
+            <div class="node-body">
+              <div class="node-label">Physical sensor positions (i, j, k)</div>
+              <div class="node-val" id="nd-pos-s1" style="color:var(--txt2);">S1 MPU  — not set</div>
+              <div class="node-val" id="nd-pos-s2" style="color:var(--txt2);">S2 MPU  — not set</div>
+              <div class="node-val" id="nd-pos-s3" style="color:var(--txt2);">S3 SG   — not set</div>
+              <div class="node-val" id="nd-pos-s4" style="color:var(--txt2);">S4 SG   — not set</div>
+              <div class="node-label" style="margin-top:4px;">Data source</div>
+              <div class="node-val" id="nd-sens-src" style="color:var(--txt2);">MQTT · awaiting assignment</div>
+            </div>
+            <div class="port port-in"  id="p-sens-in1" style="top:50%"></div>
+            <div class="port port-out" id="p-sens-out"></div>
+          </div>
+
+          <!-- FEM Simulation -->
+          <div class="node" id="n-fem" style="left:540px;top:20px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-fem"></span>
+              <span class="node-title">FEM Simulation</span>
+              <div class="node-status dot" id="nd-fem"></div>
+            </div>
+            <div class="node-body">
+              <div class="node-label">Status</div>
+              <div class="node-val" id="fem-status-val">idle</div>
+              <div class="node-label">Cycle / Max Stress</div>
+              <div class="node-val" id="fem-cycle-val">— / —</div>
+              <div class="node-label" style="margin-top:4px;">Interval (seconds)</div>
+              <div style="display:flex;align-items:center;gap:6px;padding:2px 0 4px;">
+                <input type="range" min="1" max="60" value="5" step="1" class="chart-range-slider" id="sim-interval-slider" oninput="onSimIntervalChange(this.value)" style="flex:1"/>
+                <span class="chart-range-val" id="sim-interval-val" style="min-width:30px;">5 s</span>
+              </div>
+              <button class="node-btn" onclick="singleStep()">Run Single Cycle</button>
+            </div>
+            <div class="port port-in"  id="p-fem-in"></div>
+            <div class="port port-out" id="p-fem-out"  style="top:30%"></div>
+            <div class="port port-out" id="p-fem-out2" style="top:55%"></div>
+            <div class="port port-out" id="p-fem-out3" style="top:80%"></div>
+          </div>
+
+          <!-- Neo4j Graph DB -->
+          <div class="node" id="n-neo4j" style="left:540px;top:260px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-neo4j"></span>
+              <span class="node-title">Neo4j Graph DB</span>
+              <div class="node-status dot" id="nd-neo4j"></div>
+              <span class="chart-ts-badge" id="neo4j-updated-at" style="margin-left:auto;">—</span>
+            </div>
+            <div class="node-body">
+              <div class="node-label">Nodes</div>
+              <div class="neo4j-counts-grid" id="neo4j-counts-grid">
+                <div class="nc-row"><span class="nc-lbl">Voxels</span><span class="nc-val" id="neo4j-voxels">—</span></div>
+                <div class="nc-row"><span class="nc-lbl">FEMAnalysis</span><span class="nc-val" id="neo4j-analyses">—</span></div>
+                <div class="nc-row"><span class="nc-lbl">SensorStream</span><span class="nc-val" id="neo4j-streams">—</span></div>
+                <div class="nc-row nc-total"><span class="nc-lbl">Total nodes</span><span class="nc-val" id="neo4j-total-nodes">—</span></div>
+              </div>
+              <div class="node-label" style="margin-top:5px;">Relationships</div>
+              <div class="neo4j-counts-grid">
+                <div class="nc-row"><span class="nc-lbl">Total rels</span><span class="nc-val" id="neo4j-total-rels">—</span></div>
+              </div>
+              <button class="node-btn" style="margin-top:6px;" onclick="refreshNeo4j()">Refresh</button>
+            </div>
+            <div class="port port-in"  id="p-neo4j-in"></div>
+            <div class="port port-out" id="p-neo4j-out"></div>
+          </div>
+
+          <!-- MPU Stream (accelerometer + gyroscope) -->
+          <div class="node node-wide" id="n-chart-mpu" style="left:810px;top:20px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-chart-mpu"></span>
+              <span class="node-title">MPU Stream</span>
+              <div class="node-status dot" id="nd-chart-mpu"></div>
+              <span class="chart-live-badge" id="mpu-live">LIVE</span>
+              <span class="chart-ts-badge" id="mpu-ts">—</span>
+            </div>
+            <div class="node-body">
+              <div class="chart-ctrl-row">
+                <span class="chart-range-lbl">Window</span>
+                <input type="range" min="10" max="300" value="60" step="10" class="chart-range-slider" id="mpu-window" oninput="onMpuWindowChange(this.value)"/>
+                <span class="chart-range-val" id="mpu-window-val">60 pts</span>
+              </div>
+              <div class="chart-minmax-bar">
+                <span id="mpu-min-lbl">Min —</span>
+                <span id="mpu-max-lbl">Max —</span>
+                <span class="chart-pan-hint">drag to pan · dbl-click to live</span>
+              </div>
+              <div class="node-chart-wrap">
+                <canvas id="mpu-chart"></canvas>
+              </div>
+            </div>
+            <div class="port port-in" id="p-mpu-in" style="top:50%"></div>
+          </div>
+
+          <!-- SG Stream (strain gauges) -->
+          <div class="node node-wide" id="n-chart-sg" style="left:810px;top:310px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-chart-sg"></span>
+              <span class="node-title">SG Stream</span>
+              <div class="node-status dot" id="nd-chart-sg"></div>
+              <span class="chart-live-badge" id="sg-live">LIVE</span>
+              <span class="chart-ts-badge" id="sg-ts">—</span>
+            </div>
+            <div class="node-body">
+              <div class="chart-ctrl-row">
+                <span class="chart-range-lbl">Window</span>
+                <input type="range" min="10" max="300" value="60" step="10" class="chart-range-slider" id="sg-window" oninput="onSgWindowChange(this.value)"/>
+                <span class="chart-range-val" id="sg-window-val">60 pts</span>
+              </div>
+              <div class="chart-minmax-bar">
+                <span id="sg-min-lbl">Min —</span>
+                <span id="sg-max-lbl">Max —</span>
+                <span class="chart-pan-hint">drag to pan · dbl-click to live</span>
+              </div>
+              <div class="node-chart-wrap">
+                <canvas id="sg-chart"></canvas>
+              </div>
+            </div>
+            <div class="port port-in" id="p-sg-in"  style="top:35%"></div>
+            <div class="port port-in" id="p-sg-in2" style="top:65%"></div>
+          </div>
+
+          <!-- FEM Stats -->
+          <div class="node node-wide" id="n-stats" style="left:1200px;top:20px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-stats"></span>
+              <span class="node-title">FEM Stats</span>
+              <div class="node-status dot" id="nd-stats"></div>
+            </div>
+            <div class="node-body">
+              <div class="node-stats-grid" id="fem-stats">
+                <div class="stat-card"><div class="lbl">Avg Stress</div><div class="val" id="stat-avg-stress">—</div></div>
+                <div class="stat-card"><div class="lbl">Max Stress</div><div class="val" id="stat-max-stress">—</div></div>
+                <div class="stat-card"><div class="lbl">Cycle</div><div class="val" id="stat-cycle">0</div></div>
+                <div class="stat-card"><div class="lbl">Voxels Updated</div><div class="val" id="stat-voxels">—</div></div>
+              </div>
+            </div>
+            <div class="port port-in" id="p-stats-in"></div>
+          </div>
+
+          <!-- Pipeline Log -->
+          <div class="node node-wide2" id="n-log" style="left:1200px;top:220px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-log"></span>
+              <span class="node-title">Pipeline Log</span>
+            </div>
+            <div class="node-body" style="padding:8px 10px;">
+              <div class="node-log-wrap" id="log-panel"></div>
+            </div>
+            <div class="port port-in" id="p-log-in"></div>
+          </div>
+
+          <!-- FEM Cycles Chart -->
+          <div class="node node-wide" id="n-chart-fem" style="left:1470px;top:20px;">
+            <div class="node-head">
+              <span class="ico ico-14 node-icon" id="ni-chart-fem"></span>
+              <span class="node-title">FEM Cycles</span>
+              <div class="node-status dot" id="nd-chart-fem"></div>
+              <span class="chart-live-badge" id="fem-cycle-live">LIVE</span>
+              <span class="chart-ts-badge" id="fem-cycle-ts">—</span>
+            </div>
+            <div class="node-body">
+              <div class="chart-ctrl-row">
+                <span class="chart-range-lbl">Window</span>
+                <input type="range" min="1" max="200" value="40" step="1" class="chart-range-slider" id="fem-cycle-window" oninput="onFemCycleWindowChange(this.value)"/>
+                <span class="chart-range-val" id="fem-cycle-window-val">40 cycles</span>
+              </div>
+              <div class="chart-minmax-bar">
+                <span id="fem-cycle-min-lbl">Min —</span>
+                <span id="fem-cycle-max-lbl">Max —</span>
+                <span class="chart-pan-hint">drag to pan · dbl-click to live</span>
+              </div>
+              <div class="node-chart-wrap" style="height:170px;">
+                <canvas id="fem-cycle-chart"></canvas>
+              </div>
+              <div class="chart-minmax-bar" style="margin-top:4px;border-top:1px solid rgba(0,0,0,.06);padding-top:4px;">
+                <span style="font-size:8px;color:var(--txt2);">Voxels updated (last cycle)</span>
+                <span id="fem-vox-badge" style="font-size:9px;font-weight:700;font-family:'Roboto Mono',monospace;color:var(--txt1);">—</span>
+              </div>
+            </div>
+            <div class="port port-in" id="p-femcycle-in" style="top:50%"></div>
+          </div>
+
+        </div><!-- #nodes -->
+      </div><!-- #nf-canvas -->
+    </div><!-- #nodeflow -->
+
+    <!-- ── BOTTOM ROW: Full-width 3D viewport + floating panels ── -->
+    <div id="dome-section">
+
+      <!-- 3D Viewport -->
+      <div id="three-wrap">
+        <canvas id="three-canvas"></canvas>
+        <div id="voxel-tooltip"></div>
+        <div id="viewer-controls">
+          <button class="viewer-btn" onclick="resetCamera()"     title="Reset camera">  <span class="ico ico-14" id="ico-reset"></span></button>
+          <button class="viewer-btn" onclick="toggleWireframe()" title="Wireframe">      <span class="ico ico-14" id="ico-wire"></span></button>
+          <button class="viewer-btn" id="btn-pins" onclick="togglePins()" title="AI voxel pins (none yet)"><span class="ico ico-14" id="ico-pins"></span></button>
+        </div>
+        <div id="dome-label">3D Voxelized Dome · Neo4j Graph DB</div>
+      </div>
+
+      <!-- Floating Panel: Sensor Assignment -->
+      <div class="float-panel" id="fp-assign" style="left:12px;width:220px;">
+        <div class="fp-head" id="fp-assign-head">
+          <span class="ico ico-14" id="ico-assign"></span>
+          <span class="title">Sensor Assignment</span>
+          <div class="hdr-sp"></div>
+          <span style="color:var(--txt3);cursor:grab;" title="Drag to move">⠿</span>
+        </div>
+        <div class="fp-body">
+          <div style="padding:6px 10px 4px;font-size:9px;color:var(--txt2);">
+            Mapped from physical dome image. Adjust if needed.
+          </div>
+          <div id="sensor-cards">
+            <div class="sensor-card" id="sc-s1">
+              <div class="sc-title">S1 – MPU <span class="sc-badge">MPU</span></div>
+              <div class="sc-inputs">
+                <input type="number" placeholder="i" id="s1-i" class="vox-input" min="0" value="41"/>
+                <input type="number" placeholder="j" id="s1-j" class="vox-input" min="0" value="44"/>
+                <input type="number" placeholder="k" id="s1-k" class="vox-input" min="0" value="44"/>
+              </div>
+              <div class="sc-pos unset" id="sc-pos-s1">not assigned</div>
+            </div>
+            <div class="sensor-card" id="sc-s2">
+              <div class="sc-title">S2 – MPU <span class="sc-badge">MPU</span></div>
+              <div class="sc-inputs">
+                <input type="number" placeholder="i" id="s2-i" class="vox-input" min="0" value="71"/>
+                <input type="number" placeholder="j" id="s2-j" class="vox-input" min="0" value="24"/>
+                <input type="number" placeholder="k" id="s2-k" class="vox-input" min="0" value="22"/>
+              </div>
+              <div class="sc-pos unset" id="sc-pos-s2">not assigned</div>
+            </div>
+            <div class="sensor-card" id="sc-s3">
+              <div class="sc-title">S3 – Strain <span class="sc-badge">SG</span></div>
+              <div class="sc-inputs">
+                <input type="number" placeholder="i" id="s3-i" class="vox-input" min="0" value="56"/>
+                <input type="number" placeholder="j" id="s3-j" class="vox-input" min="0" value="37"/>
+                <input type="number" placeholder="k" id="s3-k" class="vox-input" min="0" value="54"/>
+              </div>
+              <div class="sc-pos unset" id="sc-pos-s3">not assigned</div>
+            </div>
+            <div class="sensor-card" id="sc-s4">
+              <div class="sc-title">S4 – Strain <span class="sc-badge">SG</span></div>
+              <div class="sc-inputs">
+                <input type="number" placeholder="i" id="s4-i" class="vox-input" min="0" value="51"/>
+                <input type="number" placeholder="j" id="s4-j" class="vox-input" min="0" value="28"/>
+                <input type="number" placeholder="k" id="s4-k" class="vox-input" min="0" value="73"/>
+              </div>
+              <div class="sc-pos unset" id="sc-pos-s4">not assigned</div>
+            </div>
+          </div>
+          <div style="padding:6px 10px 10px;">
+            <button class="node-btn assign-btn" id="btn-assign-sensors" onclick="assignSensors()">Assign Sensors</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Floating Panel: Filter + DB -->
+      <div class="float-panel" id="fp-legend" style="right:12px;top:12px;width:186px;">
+        <div class="fp-head" id="fp-legend-head">
+          <span class="ico ico-14" id="ico-legend"></span>
+          <span class="title">Voxel Filter</span>
+          <div class="hdr-sp"></div>
+          <span style="color:var(--txt3);cursor:grab;" title="Drag to move">⠿</span>
+        </div>
+        <div class="fp-body">
+          <div style="padding:8px 0 6px;display:flex;flex-direction:column;gap:2px;">
+            <label class="legend-item"><input type="checkbox" id="show-sensors" checked onchange="updateVoxelVisibility()"/><div class="legend-dot" style="background:#00b191"></div>MPU sensors</label>
+            <label class="legend-item"><input type="checkbox" id="show-sg" checked onchange="updateVoxelVisibility()"/><div class="legend-dot" style="background:#FF8C00"></div>Strain gauges</label>
+            <label class="legend-item"><input type="checkbox" id="show-high"    checked onchange="updateVoxelVisibility()"/><div class="legend-dot" style="background:#333"></div>High stress</label>
+            <label class="legend-item"><input type="checkbox" id="show-low"     checked onchange="updateVoxelVisibility()"/><div class="legend-dot" style="background:#bbb"></div>Low stress</label>
+            <label class="legend-item" style="flex-direction:column;align-items:flex-start;gap:5px;margin-top:2px;">
+              <span style="color:var(--txt1);font-size:10px;">Threshold: <strong id="thresh-val">50%</strong></span>
+              <input type="range" min="0" max="100" value="50" id="stress-thresh" style="width:100%" oninput="onThreshChange(this.value)"/>
+            </label>
+          </div>
+          <div style="padding:6px 10px;font-size:9.5px;font-weight:700;letter-spacing:.1em;color:var(--txt1);text-transform:uppercase;border-top:1px solid rgba(150,150,150,.15);">Graph DB</div>
+          <div style="padding:8px 12px 10px;display:flex;flex-direction:column;gap:4px;font-size:10px;color:var(--txt1);">
+            <span id="db-voxels">Voxels: —</span>
+            <span id="db-solid">Solid: —</span>
+            <span id="db-sensors">Sensors: —</span>
+            <span id="db-fem">FEM runs: —</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- #dome-section -->
+  </div><!-- #left -->
+
+  <!-- ── RIGHT: Chatbot ── -->
+  <div id="right">
+
+    <!-- Header -->
+    <div class="panel-hdr">
+      <span class="ico ico-16" id="ico-bot"></span>
+      <span class="title">GraphRAG Agent</span>
+      <div class="hdr-sp"></div>
+      <button class="chat-hdr-btn" onclick="chatClear()" title="Clear conversation">
+        <span class="ico ico-12" id="ico-chat-clear"></span>
+      </button>
+      <div class="dot" id="dot-agent"></div>
+    </div>
+
+    <!-- Live context strip -->
+    <div id="chat-ctx-strip">
+      <span class="ico ico-10" id="ico-ctx-sim"></span>
+      <span id="ctx-sim">—</span>
+      <span class="ctx-sep">·</span>
+      <span class="ico ico-10" id="ico-ctx-mqtt"></span>
+      <span id="ctx-mqtt">—</span>
+      <span class="ctx-sep">·</span>
+      <span id="ctx-readings">no data</span>
+    </div>
+
+    <!-- Message history -->
+    <div id="chat-msgs">
+      <div class="chat-bubble system">
+        Connected to S2VMO Knowledge Graph — ask about structural health,
+        voxel stress, sensor readings, FEM analysis or Neo4j queries.
+      </div>
+    </div>
+
+    <!-- Typing indicator -->
+    <div id="chat-typing">
+      <div class="typing-dots"><span></span><span></span><span></span></div>
+      <span id="chat-thinking-lbl">Querying knowledge graph…</span>
+    </div>
+
+    <!-- Suggestion chips -->
+    <div id="chat-chips">
+      <button class="chat-chip" onclick="chipSend(this)">Highest stress voxels</button>
+      <button class="chat-chip" onclick="chipSend(this)">Sensor readings now</button>
+      <button class="chat-chip" onclick="chipSend(this)">Any anomalies?</button>
+      <button class="chat-chip" onclick="chipSend(this)">Dome health summary</button>
+      <button class="chat-chip" onclick="chipSend(this)">Surface voxels</button>
+      <button class="chat-chip" onclick="chipSend(this)">Recent FEM cycles</button>
+    </div>
+
+    <!-- Input row -->
+    <div id="chat-input-row">
+      <textarea id="chat-input"
+        placeholder="Ask about structural health, stress, voxels…"
+        rows="1"
+        onkeydown="chatKeydown(event)"
+        oninput="autoResizeChatInput(this)"></textarea>
+      <button id="chat-send" onclick="sendChat()">
+        <span class="ico ico-14" id="ico-send"></span>
+      </button>
+    </div>
+
+  </div>
+</div><!-- #workspace -->
+
+<!-- ════════ STATUS BAR ══════════════════════════════════════════════════════ -->
+<div id="statusbar">
+  <div class="sbar-item">S2VMO v1.0</div>
+  <div class="sbar-sep"></div>
+  <div class="sbar-item">S1 <span id="sb-s1" style="color:var(--txt0);font-weight:500">—</span> μE</div>
+  <div class="sbar-item">S2 <span id="sb-s2" style="color:var(--txt0);font-weight:500">—</span> μE</div>
+  <div class="sbar-item">S3 <span id="sb-s3" style="color:var(--mid);font-weight:500">—</span> μE</div>
+  <div class="sbar-item">S4 <span id="sb-s4" style="color:var(--mid);font-weight:500">—</span> μE</div>
+  <div class="sbar-sep"></div>
+  <div class="sbar-item">Cycle <span id="sb-cycle" style="font-weight:500">0</span></div>
+  <div class="sbar-item">Avg stress <span id="sb-stress" style="font-weight:500">—</span> Pa</div>
+  <div class="sbar-sep"></div>
+  <div class="sbar-item" id="sb-ws-state">WS: connecting…</div>
+  <div class="sbar-sep"></div>
+  <div class="sbar-item" id="sb-time">—</div>
+</div>
+
+<!-- Modal dialog -->
+<div id="modal-overlay">
+  <div class="modal">
+    <h3 id="modal-title">Dialog</h3>
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -38,32 +38,30 @@ class RAGWorkflow:
         """Initialize RAG workflow with Agno agent"""
         self.rag_agent = GraphRAGAgent()
     
-    def run(self, question: str, save_to_memory: bool = True) -> Dict[str, Any]:
+    def run(self, question: str, save_to_memory: bool = True,
+            live_context: str = "") -> Dict[str, Any]:
         """
-        Execute RAG workflow for a question
-        
+        Execute RAG workflow for a question.
+
         Args:
-            question: User's question
-            save_to_memory: Whether to save conversation to memory
-            
+            question:      User's question
+            save_to_memory: Whether to persist this turn to agent memory
+            live_context:  Optional live system-state snapshot to inject
+                           before the question so the LLM is context-aware
+                           without needing to call a tool for basics.
         Returns:
             Dictionary with answer and metadata
         """
-        print(f"\n{'='*60}")
-        print(f"🚀 RAG Workflow Starting")
-        print(f"{'='*60}")
-        
-        # Execute through agent
-        answer = self.rag_agent.ask(question, save_to_memory=save_to_memory)
-        
-        print(f"\n{'='*60}")
-        print(f"✅ RAG Workflow Complete")
-        print(f"{'='*60}\n")
-        
+        answer = self.rag_agent.ask(
+            question,
+            save_to_memory=save_to_memory,
+            live_context=live_context,
+        )
+
         return {
             "question": question,
-            "answer": answer,
-            "status": "success"
+            "answer":   answer,
+            "status":   "success",
         }
     
     def run_conversation(self):

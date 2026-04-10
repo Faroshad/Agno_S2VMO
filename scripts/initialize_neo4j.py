@@ -10,7 +10,14 @@ This script:
 
 import sys
 import os
+import io
 import subprocess
+
+# Force UTF-8 stdout so emoji / special chars never crash on Windows CP1252
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+else:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # Add parent directory to path for imports
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,10 +55,15 @@ def main():
     print("\n📦 Step 1: Creating voxel grid from mesh...")
     try:
         voxelizer_path = os.path.join("utils", "voxelizer.py")
+        child_env = os.environ.copy()
+        child_env["PYTHONIOENCODING"] = "utf-8"
         result = subprocess.run(
             [sys.executable, voxelizer_path],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
             check=True
         )
         print(result.stdout)

@@ -2,16 +2,23 @@
 agno>=0.1.0
 
 # Neo4j and graph database
-neo4j==5.15.0
+neo4j>=5.15.0
 
 # OpenAI for embeddings and LLM
 openai>=1.6.1,<2.0.0
 
 # Environment and configuration
-python-dotenv==1.0.0
+python-dotenv>=1.0.0
 
-# Data validation
-pydantic>=2.5.0,<2.10.0
+# Data validation — use 2.10+ so pip can install binary wheels on Python 3.12+
+# (older pydantic-core pins fail to build from source on very new Python without Rust)
+pydantic>=2.10.0,<3
+
+# Web API + Digital Twin UI
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+paho-mqtt>=2.0.0
 
 # Scientific computing
 numpy>=1.21.0
@@ -21,4 +28,5 @@ torch>=2.0.0
 
 # 3D mesh processing
 trimesh>=3.20.0
-
+scipy>=1.10.0
+scikit-image>=0.21.0

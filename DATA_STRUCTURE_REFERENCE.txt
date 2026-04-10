@@ -1,0 +1,532 @@
+================================================================================
+  S2VMO / AGNO_S2VMO — COMPLETE DATA STRUCTURE & FORMAT REFERENCE
+  Sensor Data · Graph DB Schema · Pre-Trained Model I/O
+================================================================================
+Generated: 2026-04-08
+Workspace: E:\Work\Professional\AI\S2VMO\Agno_S2VMO
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 1 — STRAIN GAUGE SENSOR DATA
+────────────────────────────────────────────────────────────────────────────────
+
+Source file: sensors/realistic_sensor_generator.py
+              tools/sensor_update.py
+
+Number of gauges : 4 (fixed, hard-coded)
+Sensor IDs       : S1, S2, S3, S4
+Physical unit    : microstrain (μE)
+Value range      : clipped to [-1500, 1500] μE
+Precision        : rounded to 2 decimal places (float)
+Update cadence   : ~0.33 Hz (default 3.0 s period via SimulationCoordinator)
+                   configurable via --period-s CLI argument
+
+Sensor grid positions (fixed):
+  Sensor  grid_i  grid_j  grid_k
+  ------  ------  ------  ------
+  S1        20      15      40
+  S2        50      15      40
+  S3        35      25      30
+  S4        65      10      50
+
+Per-reading dictionary structure (returned by generate_strain_readings(t)):
+  Key                Type     Description
+  -----------------  -------  ------------------------------------------------
+  strain_uE          float    Strain in microstrain (core measurement)
+  grid_i             int      Voxel grid index i (x-axis)
+  grid_j             int      Voxel grid index j (y-axis)
+  grid_k             int      Voxel grid index k (z-axis)
+  timestamp_ms       float    Wall-clock timestamp in milliseconds
+  sequence           int      Monotonic sequence counter
+  scenario_time_s    float    Scaled elapsed scenario time (seconds)
+  env_factor_uE      float    Environmental noise/offset component (μE)
+
+FEM pipeline input vector:
+  get_fem_input(t) → list[float, float, float, float]
+  = [S1.strain_uE, S2.strain_uE, S3.strain_uE, S4.strain_uE]
+
+Incremental JSON path (UpdateAgent / IncrementalGraphUpdater):
+  Strain also appears as the field  strain_uE  (float, μE) on Voxel nodes,
+  alongside  temp_c (temperature °C),  load_N (load in Newtons),
+  hx711_raw (raw ADC integer from HX711 load cell chip).
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 2 — GYROSCOPE (IMU) SENSOR DATA
+────────────────────────────────────────────────────────────────────────────────
+
+Source file: core/change_detector.py
+              tools/neo4j_tools.py  (DATABASE_SCHEMA)
+
+NOTE: Gyroscope data is NOT part of the default simulation pipeline (no
+RealisticSensorGenerator path for gyro). It is only present in the incremental
+JSON → Neo4j update path (UpdateAgent). If your external hardware/JSON feed
+includes gyro data it will be ingested; otherwise these fields remain absent.
+
+Physical unit    : degrees per second (°/s)
+Axes             : X, Y, Z (3-axis)
+
+Input JSON structure (nested under each voxel record):
+  {
+    "gyro_dps": {
+      "x": <float>,   // rotation rate around X axis, °/s
+      "y": <float>,   // rotation rate around Y axis, °/s
+      "z": <float>    // rotation rate around Z axis, °/s
+    }
+  }
+
+Neo4j Voxel property names (flattened on ingest):
+  gyro_dps_x   float   °/s
+  gyro_dps_y   float   °/s
+  gyro_dps_z   float   °/s
+
+Companion IMU data (accelerometer, same pattern):
+  Input JSON key : "acc_g"  →  { "x": …, "y": …, "z": … }
+  Neo4j properties:
+    acc_g_x    float   g (acceleration in units of g)
+    acc_g_y    float   g
+    acc_g_z    float   g
+
+Sample rate: Not defined in code — whatever rate your external JSON file
+             provides.  No Hz constant is set for gyro/acc in this repo.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 3 — NEO4J GRAPH DATABASE SCHEMA
+────────────────────────────────────────────────────────────────────────────────
+
+Source files: core/voxel_grid_to_neo4j.py
+               tools/neo4j_tools.py
+               tools/fem_tool.py
+               tools/sensor_update.py
+               core/change_detector.py
+               agents/monitoring_agent.py
+               core/memory_manager.py
+
+━━━ 3.1  NODE: Voxel (mesh/simulation path) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Created by: VoxelGridToNeo4j (core/voxel_grid_to_neo4j.py)
+Merge key : (grid_i, grid_j, grid_k)  — spatial position in the 3-D grid
+
+Property         Type        Source            Description
+---------------  ----------  ----------------  --------------------------------
+grid_i           int         voxel grid        Grid index (x)
+grid_j           int         voxel grid        Grid index (y)
+grid_k           int         voxel grid        Grid index (z)
+x                float       computed          World x = origin_x + i * pitch
+y                float       computed          World y = origin_y + j * pitch
+z                float       computed          World z = origin_z + k * pitch
+is_sensor        bool        sensor positions  True for S1–S4 voxels
+sensor_strain_uE float|null  sensor_update.py  Strain at sensor location (μE)
+eps_xx           list[float] FEM pipeline      Strain component ε_xx (history)
+eps_yy           list[float] FEM pipeline      Strain component ε_yy (history)
+eps_zz           list[float] FEM pipeline      Strain component ε_zz (history)
+sigma_xx         list[float] FEM pipeline      Stress σ_xx (Pa, history array)
+sigma_yy         list[float] FEM pipeline      Stress σ_yy (Pa, history array)
+sigma_zz         list[float] FEM pipeline      Stress σ_zz (Pa, history array)
+sigma_xy         list[float] FEM pipeline      Stress σ_xy (Pa, history array)
+sigma_yz         list[float] FEM pipeline      Stress σ_yz (Pa, history array)
+sigma_xz         list[float] FEM pipeline      Stress σ_xz (Pa, history array)
+stress_magnitude list[float] FEM pipeline      |σ| = √(σ_xx²+σ_yy²+σ_zz²), Pa
+fem_versions     list[int]   FEM pipeline      FEM analysis version IDs
+fem_timestamps   list[str]   FEM pipeline      ISO timestamps per FEM run
+last_fem_version int         FEM pipeline      Most recent FEM version
+last_updated     str         sensor/FEM        ISO timestamp of last write
+
+━━━ 3.2  NODE: Voxel (incremental JSON path) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Created by: IncrementalGraphUpdater (core/change_detector.py)
+Merge key : id (integer, from JSON)
+
+Property         Type    Source    Description
+---------------  ------  --------  ---------------------------------------------
+id               int     JSON      Unique voxel identifier
+type             str     JSON      Semantic type label (e.g. "structural")
+position         map     JSON      {x, y, z} world coordinates
+strain_uE        float   JSON      Strain in microstrain
+temp_c           float   JSON      Temperature (°C)
+load_N           float   JSON      Applied load (Newtons)
+hx711_raw        int     JSON      Raw ADC count from HX711 load cell
+gyro_dps_x       float   JSON IMU  Gyro X axis (°/s)
+gyro_dps_y       float   JSON IMU  Gyro Y axis (°/s)
+gyro_dps_z       float   JSON IMU  Gyro Z axis (°/s)
+acc_g_x          float   JSON IMU  Accelerometer X axis (g)
+acc_g_y          float   JSON IMU  Accelerometer Y axis (g)
+acc_g_z          float   JSON IMU  Accelerometer Z axis (g)
+last_updated     str     system    ISO timestamp
+
+━━━ 3.3  NODE: SensorStream ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Created by: tools/sensor_update.py
+Merge key : id = 'global'  (singleton node)
+
+Property     Type          Description
+-----------  ------------  ----------------------------------------------------
+id           str           Always 'global'
+timestamps   list[float]   Appended wall-clock timestamps (ms) per update
+S1           list[float]   S1 strain_uE history array
+S2           list[float]   S2 strain_uE history array
+S3           list[float]   S3 strain_uE history array
+S4           list[float]   S4 strain_uE history array
+count        int           Total number of readings stored
+last_updated str           ISO timestamp of most recent update
+
+━━━ 3.4  NODE: FEMAnalysis ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Created by: tools/fem_tool.py  (update_neo4j_with_fem_results)
+
+Property              Type       Description
+--------------------  ---------  ----------------------------------------------
+analysis_id           str        UUID for this FEM run
+version               int        Monotonic version counter
+timestamp             str        ISO timestamp
+sensor_reading        list[float] The 4-vector [S1,S2,S3,S4] μE fed to S2V
+total_voxels          int        Total solid voxels processed
+status                str        'completed' | 'failed'
+mean_stress_magnitude float      Mean |σ| across solid voxels (Pa)
+max_stress_magnitude  float      Peak |σ| (Pa)
+std_stress_magnitude  float      Std dev of |σ| (Pa)
+solid_voxel_count     int        Number of solid (non-empty) voxels
+
+━━━ 3.5  NODE: StructuralAlert ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Created by: agents/monitoring_agent.py
+
+Property        Type   Description
+--------------  -----  --------------------------------------------------------
+alert_id        str    UUID
+alert_type      str    'stress_warning' | 'stress_critical' | 'cycle_summary'
+                        | 'data_quality'
+severity        str    'info' | 'warning' | 'critical'
+timestamp       str    ISO timestamp
+fem_version     int    Associated FEM analysis version
+details         str    Human-readable description
+stress_value    float  Measured stress magnitude (Pa)
+threshold       float  Threshold that was exceeded (Pa)
+
+━━━ 3.6  NODES: Memory / Conversation ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Created by: core/memory_manager.py
+
+  ConversationSession  — {session_id, created_at, last_active, message_count}
+  ConversationMessage  — {message_id, session_id, role, content, timestamp,
+                           tokens}
+  SemanticMemory       — {memory_id, content, embedding (1536-d float[]),
+                           created_at, access_count, last_accessed}
+
+━━━ 3.7  RELATIONSHIPS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  (Voxel)-[:ADJACENT_TO]-(Voxel)
+      Undirected, between face-sharing neighbours in the 3-D grid.
+      Created during initial mesh loading (VoxelGridToNeo4j).
+      No properties.
+
+  (ConversationSession)-[:HAS_MESSAGE]->(ConversationMessage)
+
+  (IncrementalGraphUpdater path also creates):
+    (Chunk)-[:CONTAINS]->(Voxel)
+    (Voxel)-[:HAS_PROPERTY]->(VoxelProperty)
+    (ChangeNotification) — standalone, references voxel id
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 4 — DATA FLOW: RAW SENSOR → GRAPH DB (end-to-end)
+────────────────────────────────────────────────────────────────────────────────
+
+Source: synchronized_sim_coordinator.py + initialize_neo4j.py
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ STEP 0 — MESH INITIALIZATION (once)                                     │
+  │                                                                         │
+  │  STL/mesh file                                                          │
+  │      │  utils/voxelizer.py                                             │
+  │      ▼                                                                  │
+  │  out/voxel_grid.npz   { matrix: bool(83,45,87), origin, pitch }        │
+  │      │  core/voxel_grid_to_neo4j.py                                    │
+  │      ▼                                                                  │
+  │  Neo4j: Voxel nodes + ADJACENT_TO edges                                │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ STEP 1 — SENSOR READING (every ~3 s)                                    │
+  │                                                                         │
+  │  RealisticSensorGenerator.generate_strain_readings(t)                  │
+  │      → {S1…S4: {strain_uE, grid_i/j/k, timestamp_ms, …}}              │
+  │      │  tools/sensor_update.py                                         │
+  │      ▼                                                                  │
+  │  Neo4j: SET Voxel.sensor_strain_uE at 4 positions                      │
+  │         MERGE SensorStream {id:'global'} — append to S1…S4 arrays      │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ STEP 2 — FEM / NEURAL PIPELINE                                          │
+  │                                                                         │
+  │  [S1, S2, S3, S4] μE (4 floats)                                        │
+  │      │  × 1e-6 → dimensionless strain                                  │
+  │      │  reshape → tensor (1, 4) float32                                │
+  │      ▼                                                                  │
+  │  SensorToVoxelNet  (models/s2v_model_final.pth)                        │
+  │      → eps_voxel  shape (3, 83, 45, 87)  [ε_xx, ε_yy, ε_zz]          │
+  │      │  normalize: (eps_voxel - strain_mean) / (strain_std + 1e-8)     │
+  │      ▼                                                                  │
+  │  StressUNet        (models/unet_model_final.pth)                       │
+  │      → sigma_voxel shape (6, 83, 45, 87)                               │
+  │        [σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]  (Pa)                   │
+  │      │                                                                  │
+  │      ├── saved: out/eps_voxel_predicted.npz                            │
+  │      ├── saved: out/sigma_voxel_predicted_pp.npz                       │
+  │      ├── saved: out/voxel_mask.npz                                     │
+  │      └── saved: out/solid_voxel_data.npz                               │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ STEP 3 — WRITE FEM RESULTS TO NEO4J                                     │
+  │                                                                         │
+  │  tools/fem_tool.py :: update_neo4j_with_fem_results()                  │
+  │      → CREATE FEMAnalysis node                                          │
+  │      → SET on each solid Voxel node (append to history arrays):        │
+  │          eps_xx, eps_yy, eps_zz                                         │
+  │          sigma_xx … sigma_xz                                            │
+  │          stress_magnitude                                               │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ STEP 4 — MONITORING                                                     │
+  │                                                                         │
+  │  agents/monitoring_agent.py :: assess_cycle()                          │
+  │      reads stress_magnitude from Neo4j                                 │
+  │      compares against STRESS_WARNING_THRESHOLD_PA (2000 Pa default)    │
+  │                        STRESS_CRITICAL_THRESHOLD_PA (3000 Pa default)  │
+  │      → CREATE StructuralAlert nodes if thresholds exceeded             │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ─── PARALLEL / SEPARATE PATH: JSON incremental updates ───────────────────
+
+  External hardware JSON file
+      │  agents/update_agent.py + core/change_detector.py
+      ▼
+  VoxelChangeDetector detects field changes (strain_uE, temp_c, load_N,
+      hx711_raw, gyro_dps_x/y/z, acc_g_x/y/z, …)
+      │  IncrementalGraphUpdater
+      ▼
+  Neo4j: MERGE Voxel {id:…} — SET sensor + IMU properties
+         CREATE ChangeNotification nodes
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 5 — PRE-TRAINED MODELS: ARCHITECTURE & I/O
+────────────────────────────────────────────────────────────────────────────────
+
+Source: tools/fem_tool.py  +  models/ directory
+
+Model files:
+  models/s2v_model_final.pth    — SensorToVoxelNet (Stage 1)
+  models/unet_model_final.pth   — StressUNet       (Stage 2)
+  models/strain_mean.npy        — normalization mean array
+  models/strain_std.npy         — normalization std  array
+
+━━━ MODEL 1: SensorToVoxelNet (S2V) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Purpose : Map 4 discrete sensor readings to a full 3-D strain field
+
+Input:
+  Shape     : (1, 4)  float32 tensor
+  Values    : [S1, S2, S3, S4] in dimensionless strain (μE × 1e-6)
+  Example   : [500 μE, -200 μE, 300 μE, 800 μE]
+                → [5.0e-4, -2.0e-4, 3.0e-4, 8.0e-4]
+
+Output:
+  Name      : eps_voxel
+  Shape     : (3, 83, 45, 87)  float32
+  Channels  : 0=ε_xx, 1=ε_yy, 2=ε_zz   (normal strain components)
+  Grid size : 83 × 45 × 87 voxels  (FIXED — must match trained weights)
+  Units     : dimensionless strain
+
+━━━ NORMALIZATION (between Stage 1 and Stage 2) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  strain_mean = np.load('models/strain_mean.npy')   shape matches eps_voxel
+  strain_std  = np.load('models/strain_std.npy')    shape matches eps_voxel
+
+  eps_norm = (eps_voxel - strain_mean) / (strain_std + 1e-8)
+  → Shape: (3, 83, 45, 87)  — input to StressUNet
+
+━━━ MODEL 2: StressUNet ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Purpose : Predict full 6-component stress tensor field from normalized strain
+
+Input:
+  Name      : eps_norm
+  Shape     : (3, 83, 45, 87)  float32 (normalized strain, 3 channels)
+
+Output:
+  Name      : sigma_voxel
+  Shape     : (6, 83, 45, 87)  float32
+  Channels  : 0=σ_xx, 1=σ_yy, 2=σ_zz, 3=σ_xy, 4=σ_yz, 5=σ_xz
+  Units     : Pascals (Pa)
+
+Derived scalar (post-processing):
+  stress_magnitude = √(σ_xx² + σ_yy² + σ_zz²)   per-voxel scalar (Pa)
+
+━━━ PIPELINE SUMMARY TABLE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Stage         Input                      Output
+  ------------  -------------------------  -----------------------------------
+  Raw sensor    4 × μE (float list)        4 × dimensionless (×1e-6)
+  S2V model     (1,4) float32 tensor       (3,83,45,87) eps_voxel
+  Normalize     eps_voxel + mean/std .npy  (3,83,45,87) eps_norm
+  UNet model    (3,83,45,87) eps_norm      (6,83,45,87) sigma_voxel
+  Post-process  sigma_voxel channels 0-2   (83,45,87) stress_magnitude
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 6 — OUTPUT NPZ FILES (out/ directory)
+────────────────────────────────────────────────────────────────────────────────
+
+  File                           Written by           Array keys / shapes
+  -----------------------------  -------------------  -----------------------
+  out/voxel_grid.npz             voxelizer.py         matrix: bool(83,45,87)
+                                  or fem_tool.py       origin: (3,) float
+                                                       pitch:  scalar (m)
+  
+  out/eps_voxel_predicted.npz    fem_tool.run_pipeline eps_voxel: (3,83,45,87)
+  
+  out/sigma_voxel_predicted_pp   fem_tool.run_pipeline sigma_voxel:(6,83,45,87)
+    .npz
+  
+  out/voxel_mask.npz             fem_tool.run_pipeline M:               bool(83,45,87)
+                                                       coords:          (N,3) int
+                                                       solid_voxel_count: int
+                                                       total_voxels:    int
+  
+  out/solid_voxel_data.npz       fem_tool.run_pipeline strain_solid: (3,N) float
+                                                       stress_solid: (6,N) float
+                                                       coords:       (N,3) int
+                                                       M:            bool(83,45,87)
+
+  N = number of solid (non-empty) voxels (varies per mesh)
+  World position of voxel at coords[i]: origin + coords[i] * pitch  (meters)
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 7 — VOXEL GRID GEOMETRY
+────────────────────────────────────────────────────────────────────────────────
+
+  Grid dimensions  : 83 × 45 × 87  (fixed, must match model weights)
+  Voxel size       : pitch (default 0.1 m = 10 cm per voxel)
+  Origin           : origin[3] (x,y,z of voxel 0,0,0 in world space, meters)
+  World position   : P(i,j,k) = origin + [i, j, k] * pitch
+
+  Sensor locations in the grid:
+    S1 at (20, 15, 40)  → world ≈ origin + (2.0, 1.5, 4.0) m
+    S2 at (50, 15, 40)  → world ≈ origin + (5.0, 1.5, 4.0) m
+    S3 at (35, 25, 30)  → world ≈ origin + (3.5, 2.5, 3.0) m
+    S4 at (65, 10, 50)  → world ≈ origin + (6.5, 1.0, 5.0) m
+
+  Solid voxels  : matrix[i,j,k] == True  (inside structural body)
+  Empty voxels  : matrix[i,j,k] == False (air / void — excluded from FEM)
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 8 — CONFIGURATION PARAMETERS
+────────────────────────────────────────────────────────────────────────────────
+
+Source: config/settings.py  +  .env
+
+Environment variables / Settings fields:
+
+  Parameter                        Default   Description
+  -------------------------------  --------  ---------------------------------
+  NEO4J_URI                        —         bolt://... connection URI
+  NEO4J_USER                       —         Database username
+  NEO4J_PASSWORD                   —         Database password
+  NEO4J_DATABASE                   neo4j     Database name
+  OPENAI_API_KEY                   —         API key for LLM + embeddings
+  OPENAI_MODEL                     —         Chat model (e.g. gpt-4o)
+  Embedding model (hard-coded)     —         text-embedding-3-small (1536-d)
+  STRESS_WARNING_THRESHOLD_PA      2000      Warn if stress_magnitude > this
+  STRESS_CRITICAL_THRESHOLD_PA     3000      Critical alert threshold (Pa)
+  MAX_CYCLE_OVERRUN_FACTOR         1.2       Max allowed period overrun ratio
+  VECTOR_SEARCH_TOP_K              —         Top-K for semantic/vector search
+  UPDATE_CHECK_INTERVAL            —         Interval for JSON change polling
+
+  Simulation period (SimulationCoordinator):
+    update_period = 3.0 s   (default; sets sensor + FEM cycle rate)
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 9 — AGENTS & TOOLS THAT PROCESS SENSOR DATA
+────────────────────────────────────────────────────────────────────────────────
+
+  Component                   File                            Role
+  --------------------------  ------------------------------  -----------------
+  GraphRAG Agent              agents/graph_rag_agent.py       Query Neo4j +
+                                                               run FEM via
+                                                               Cypher & tools
+  Update Agent                agents/update_agent.py          JSON → Neo4j
+                                                               incremental path
+  Monitoring Agent            agents/monitoring_agent.py      Stress threshold
+                                                               alerts after
+                                                               each FEM cycle
+  FEM Tools                   tools/fem_tool.py               run_pipeline,
+                                                               run_fem_analysis,
+                                                               update_neo4j
+  Sensor Tool                 tools/sensor_update.py          update / get /
+                                                               reset sensor
+                                                               stream in Neo4j
+  Neo4j Tools                 tools/neo4j_tools.py            Cypher queries,
+                                                               schema info,
+                                                               recent updates
+  Vector Search               tools/vector_search_tools.py    Embedding search
+                                                               on voxel chunks
+                                                               (1536-d index)
+  Memory Tools                tools/memory_tools.py           Conversation +
+                                                               semantic memory
+  Sim Coordinator             synchronized_sim_coordinator.py End-to-end loop:
+                                                               sensor→FEM→Neo4j
+                                                               →monitor
+  Voxel→Graph Init            core/voxel_grid_to_neo4j.py     One-time mesh
+                                                               import to Neo4j
+  Change Detector             core/change_detector.py         Detect JSON diffs
+                                                               + write gyro/IMU
+                                                               to Neo4j
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 10 — KEY CONCEPTS & DESIGN NOTES
+────────────────────────────────────────────────────────────────────────────────
+
+1. THREE DISTINCT "STRAIN" CONCEPTS in this codebase:
+   a) sensor_strain_uE  — raw gauge reading on 4 specific Voxel nodes (μE)
+   b) strain_uE         — JSON incremental path field (μE, any Voxel)
+   c) eps_xx/yy/zz      — FEM-computed full-field strain arrays on all solid
+                          Voxel nodes (dimensionless)
+
+2. GYROSCOPE is SCHEMA-ONLY in the default sim pipeline.
+   It exists as Neo4j Voxel properties (gyro_dps_x/y/z) only when external
+   JSON data provides it via UpdateAgent. The RealisticSensorGenerator and
+   the FEM pipeline do NOT generate or use gyroscope readings.
+
+3. NEURAL NETWORK GRID SIZE (83 × 45 × 87) IS FIXED.
+   The model weights were trained for this exact grid. Changing the mesh or
+   voxel pitch will break the pipeline unless models are retrained.
+
+4. STRESS UNITS: All stress values (sigma_*, stress_magnitude) are in Pascals.
+   Thresholds are also in Pascals (defaults: warning=2000 Pa, critical=3000 Pa).
+
+5. STRAIN SENSOR POSITIONS ARE HARD-CODED at 4 specific grid indices.
+   They are replicated in three files: realistic_sensor_generator.py,
+   sensor_update.py, and voxel_grid_to_neo4j.py. Change all three if needed.
+
+6. FEM HISTORY ARRAYS: Every FEM cycle appends values to lists on Voxel nodes.
+   Over time eps_xx, sigma_xx, etc. grow as Neo4j arrays. Use fem_versions and
+   fem_timestamps arrays to correlate values to specific analysis runs.
+
+7. VECTOR SEARCH INDEX uses Voxel nodes with integer 'id' property. The mesh
+   initialization path creates Voxels with grid_i/j/k but may not set 'id'.
+   The JSON incremental path does set 'id'. This creates a potential mismatch
+   that may affect vector search on mesh-initialized graphs.
+
+================================================================================
+END OF DOCUMENT
+================================================================================

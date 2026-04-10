@@ -3,9 +3,17 @@
 Voxelizer: Convert 3D mesh to voxel grid
 """
 
+import sys
+import io
 import numpy as np
 import trimesh
 import os
+
+# Force UTF-8 stdout so emoji / special chars never crash on Windows CP1252
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+else:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 OBJ_PATH = r"models/dome.obj"
 VOXEL_SIZE = 0.1  # voxel

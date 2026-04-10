@@ -1,0 +1,7 @@
+.venv
+.DS_Store
+# macOS AppleDouble sidecars (resource forks)
+._*
+__pycache__/
+models/dome.obj
+*.obj
